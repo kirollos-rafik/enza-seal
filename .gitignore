@@ -1,0 +1,5 @@
+/dist/
+/enza-seal
+/enza-seal.exe
+*.seal
+*.test

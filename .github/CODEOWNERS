@@ -1,0 +1,4 @@
+# Only team leads approve changes to the team file (public keys).
+# Add one lead per team here. InfoSec can be added later.
+/team/ @kirollos-rafik
+/.github/ @kirollos-rafik
