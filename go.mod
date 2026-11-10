@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	filippo.io/age v1.3.2
+	github.com/atotto/clipboard v0.1.4
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/term v0.48.0

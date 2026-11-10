@@ -1,0 +1,49 @@
+version: 2
+project_name: enza-seal
+
+builds:
+  - id: enza-seal
+    main: ./cmd/enza-seal
+    binary: enza-seal
+    env:
+      - CGO_ENABLED=0
+    goos: [windows, darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: default
+    # No version in the name, so the installers can use the "latest" download URL.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [README.md]
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Keyless signature of checksums.txt (Sigstore, using the GitHub Actions identity).
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+      - "--yes"
+
+release:
+  extra_files:
+    - glob: install.ps1
+    - glob: install.sh
+
+changelog:
+  disable: true

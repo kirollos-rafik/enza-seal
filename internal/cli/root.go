@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"filippo.io/age"
 	"github.com/spf13/cobra"
@@ -30,8 +31,36 @@ func NewRoot(version string) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newInit(), newEncrypt(), newDecrypt(), newWhoami(), newTeam(), newDevice())
+	root.AddCommand(newInit(), newEncrypt(), newDecrypt(), newWhoami(), newTeam(), newDevice(),
+		newKey(), newMenu(version), newUpdate(version), newUninstall())
+	// Plain `enza-seal` in a terminal opens the menu; otherwise show help.
+	root.RunE = func(cmd *cobra.Command, _ []string) error {
+		if isTerminal(cmd.InOrStdin()) {
+			return runMenu(cmd, version)
+		}
+		return cmd.Help()
+	}
 	return root
+}
+
+// maybeAutoSync refreshes the cached team file when it is over a day old, so
+// new colleagues and devices show up without anyone running a command. A
+// failure is reported but never blocks the command.
+func maybeAutoSync() {
+	if os.Getenv("ENZA_SEAL_TEAM") != "" || os.Getenv("ENZA_SEAL_NO_AUTOSYNC") != "" {
+		return
+	}
+	url := teamURL("")
+	path, err := config.TeamCachePath()
+	if url == "" || err != nil {
+		return
+	}
+	if fi, err := os.Stat(path); err == nil && time.Since(fi.ModTime()) < 24*time.Hour {
+		return
+	}
+	if _, err := team.SyncWithTimeout(url, path, 5*time.Second); err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not refresh the team file (%v)\n", err)
+	}
 }
 
 // ---- shared helpers ----
@@ -45,6 +74,7 @@ func isTerminal(r io.Reader) bool {
 func loadTeam() (*team.File, error) {
 	p := os.Getenv("ENZA_SEAL_TEAM")
 	if p == "" {
+		maybeAutoSync()
 		var err error
 		if p, err = config.TeamCachePath(); err != nil {
 			return nil, err
@@ -62,6 +92,9 @@ func loadIdentity() (*config.Config, age.Identity, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, nil, err
+	}
+	if cfg.Device == "" {
+		return nil, nil, errors.New("this device is encrypt-only and holds no private key; decrypt on a device that has one")
 	}
 	secret, err := keystore.Load(cfg.Device)
 	if err != nil {

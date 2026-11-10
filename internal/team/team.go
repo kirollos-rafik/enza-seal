@@ -126,10 +126,15 @@ func Load(path string) (*File, error) {
 // Sync downloads the team file from url, validates it, and replaces the
 // cached copy at path only if it is valid.
 func Sync(url, path string) (*File, error) {
+	return SyncWithTimeout(url, path, 15*time.Second)
+}
+
+// SyncWithTimeout is Sync with a custom network timeout.
+func SyncWithTimeout(url, path string, timeout time.Duration) (*File, error) {
 	if url == "" {
 		return nil, errors.New("no team file location set: pass --url or set ENZA_SEAL_TEAM_URL")
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("could not download the team file: %w", err)

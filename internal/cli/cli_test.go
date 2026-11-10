@@ -30,6 +30,7 @@ func device(t *testing.T, teamFile string) {
 	keyring.MockInit()
 	t.Setenv("ENZA_SEAL_HOME", t.TempDir())
 	t.Setenv("ENZA_SEAL_TEAM", teamFile)
+	t.Setenv("ENZA_SEAL_NO_AUTOSYNC", "1")
 }
 
 func publicKeyFromInit(t *testing.T, whoami string) string {

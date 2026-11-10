@@ -7,22 +7,55 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"time"
 
 	"filippo.io/age"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/kirollos-rafik/enza-seal/internal/clipboard"
 	"github.com/kirollos-rafik/enza-seal/internal/config"
 	"github.com/kirollos-rafik/enza-seal/internal/crypto"
 )
 
-const armorEnd = "-----END AGE ENCRYPTED FILE-----"
+const (
+	armorBegin = "-----BEGIN AGE ENCRYPTED FILE-----"
+	armorEnd   = "-----END AGE ENCRYPTED FILE-----"
+)
+
+// clearAfter is how long decrypted text stays on the clipboard (tests set 0).
+var clearAfter = 30 * time.Second
+
+// copyThenClear puts text on the clipboard, waits, and clears it, but only if
+// the clipboard still holds what we put there. Ctrl+C clears it right away.
+func copyThenClear(cmd *cobra.Command, text string) error {
+	if err := clipboard.Write(text); err != nil {
+		return fmt.Errorf("could not use the clipboard: %w", err)
+	}
+	clear := func() {
+		if cur, err := clipboard.Read(); err == nil && cur == text {
+			_ = clipboard.Write("")
+		}
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "Decrypted text copied to the clipboard. It will be cleared in %d s (Ctrl+C to clear now).\n", int(clearAfter.Seconds()))
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
+	select {
+	case <-time.After(clearAfter):
+	case <-sig:
+	}
+	clear()
+	fmt.Fprintln(cmd.ErrOrStderr(), "Clipboard cleared.")
+	return nil
+}
 
 func newEncrypt() *cobra.Command {
 	var to []string
 	var file, out string
-	var armor bool
+	var armor, clip, noCopy bool
 	cmd := &cobra.Command{
 		Use:   "encrypt",
 		Short: "Encrypt text or a file for named people, groups, or yourself (--to me)",
@@ -62,6 +95,7 @@ command-line argument, so it cannot end up in your shell history.
 			}
 
 			var src io.Reader
+			interactive := isTerminal(cmd.InOrStdin())
 			switch {
 			case file != "":
 				f, err := os.Open(file)
@@ -70,7 +104,20 @@ command-line argument, so it cannot end up in your shell history.
 				}
 				defer f.Close()
 				src = f
-			case isTerminal(cmd.InOrStdin()):
+			case clip:
+				text, err := clipboard.Read()
+				if err != nil {
+					return fmt.Errorf("could not read the clipboard: %w", err)
+				}
+				if text == "" {
+					return errors.New("the clipboard is empty")
+				}
+				// Do not leave the plain text sitting on the clipboard.
+				if err := clipboard.Write(""); err != nil {
+					return fmt.Errorf("could not clear the clipboard: %w", err)
+				}
+				src = strings.NewReader(text)
+			case interactive:
 				f := cmd.InOrStdin().(*os.File)
 				fmt.Fprint(cmd.ErrOrStderr(), "Text to encrypt (hidden, press Enter to finish): ")
 				b, err := term.ReadPassword(int(f.Fd()))
@@ -89,7 +136,8 @@ command-line argument, so it cannot end up in your shell history.
 			if out == "" && file != "" {
 				out = file + ".seal"
 			}
-			dst := cmd.OutOrStdout()
+			var textOut bytes.Buffer
+			var dst io.Writer = &textOut
 			var tmpName string
 			var tmp *os.File
 			if out != "" {
@@ -102,6 +150,17 @@ command-line argument, so it cannot end up in your shell history.
 			}
 			if err := crypto.Encrypt(dst, src, rcpts, armored); err != nil {
 				return err
+			}
+			if tmp == nil {
+				if _, err := cmd.OutOrStdout().Write(textOut.Bytes()); err != nil {
+					return err
+				}
+				// Sealed text is safe to put on the clipboard for pasting.
+				if (interactive || clip) && !noCopy {
+					if err := clipboard.Write(textOut.String()); err == nil {
+						fmt.Fprintln(cmd.ErrOrStderr(), "Copied to clipboard. Paste it anywhere.")
+					}
+				}
 			}
 			if tmp != nil {
 				if err := tmp.Close(); err != nil {
@@ -120,12 +179,14 @@ command-line argument, so it cannot end up in your shell history.
 	cmd.Flags().StringVarP(&file, "file", "f", "", "encrypt this file (writes <file>.seal)")
 	cmd.Flags().StringVar(&out, "out", "", "write the result to this file instead of the terminal")
 	cmd.Flags().BoolVar(&armor, "armor", false, "paste-friendly text output even for files")
+	cmd.Flags().BoolVar(&clip, "clip", false, "take the text from the clipboard (and clear it)")
+	cmd.Flags().BoolVar(&noCopy, "no-copy", false, "do not copy the sealed text to the clipboard")
 	return cmd
 }
 
 func newDecrypt() *cobra.Command {
 	var file, out string
-	var force bool
+	var force, copyOut bool
 	cmd := &cobra.Command{
 		Use:   "decrypt",
 		Short: "Decrypt a sealed block or a .seal file with this device's key",
@@ -146,8 +207,13 @@ func newDecrypt() *cobra.Command {
 
 			var src io.Reader = cmd.InOrStdin()
 			if isTerminal(src) {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Paste the sealed block (it ends at the END line):")
-				src = readBlock(bufio.NewReader(src))
+				if text, err := clipboard.Read(); err == nil && strings.Contains(text, armorBegin) {
+					fmt.Fprintln(cmd.ErrOrStderr(), "From clipboard: 1 sealed message")
+					src = strings.NewReader(text)
+				} else {
+					fmt.Fprintln(cmd.ErrOrStderr(), "Paste the sealed block (it ends at the END line):")
+					src = readBlock(bufio.NewReader(src))
+				}
 			}
 			plain, err := crypto.DecryptAll(src, id)
 			if err != nil {
@@ -156,10 +222,14 @@ func newDecrypt() *cobra.Command {
 			if out != "" {
 				return writeNew(out, plain, force)
 			}
+			if copyOut {
+				return copyThenClear(cmd, string(plain))
+			}
 			_, err = cmd.OutOrStdout().Write(plain)
 			return err
 		},
 	}
+	cmd.Flags().BoolVar(&copyOut, "copy", false, "put the result on the clipboard instead of the screen; cleared after 30 seconds")
 	cmd.Flags().StringVarP(&file, "file", "f", "", "decrypt this .seal file")
 	cmd.Flags().StringVar(&out, "out", "", "write the result to this file instead of the terminal")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite the output file if it exists")

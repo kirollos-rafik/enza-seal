@@ -20,7 +20,7 @@ var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 
 func newInit() *cobra.Command {
 	var name, person, teamName, device string
-	var force bool
+	var force, encryptOnly bool
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "One-time setup: create this device's key and store it in the OS secure store",
@@ -78,10 +78,22 @@ func newInit() *cobra.Command {
 			if !idPattern.MatchString(device) {
 				return errors.New("device name must be lowercase letters, digits, dot, dash or underscore (max 32)")
 			}
-			if known {
+			if known && !encryptOnly {
 				if _, dup := existing.Devices[device]; dup {
 					return fmt.Errorf("device %q is already registered for %s; choose another name with --device", device, person)
 				}
+			}
+
+			if encryptOnly {
+				if !known {
+					return errors.New("--encrypt-only needs you to be in the team file already (run enza-seal team sync)")
+				}
+				if err := config.Save(&config.Config{Person: person, Name: name, Team: teamName}); err != nil {
+					return err
+				}
+				fmt.Fprintln(errOut, "Set up as encrypt-only: no private key is stored on this device.")
+				fmt.Fprintln(errOut, "Encrypting works (including --to me); decrypt on a device that has a key.")
+				return nil
 			}
 
 			id, err := crypto.GenerateIdentity()
@@ -110,6 +122,7 @@ func newInit() *cobra.Command {
 	cmd.Flags().StringVar(&teamName, "team", "", "your team")
 	cmd.Flags().StringVar(&device, "device", "", `name of this device (default "laptop"; use e.g. "workspace" for AWS WorkSpaces)`)
 	cmd.Flags().BoolVar(&force, "force", false, "replace an existing key on this device")
+	cmd.Flags().BoolVar(&encryptOnly, "encrypt-only", false, "no private key on this device (e.g. non-persistent WorkSpaces); it can encrypt but not decrypt")
 	return cmd
 }
 
